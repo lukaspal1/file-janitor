@@ -1,0 +1,35 @@
+# File Janitor — your categories.
+#
+# Files are matched by meaning: describe what belongs in each category
+# in plain words. Optional fields:
+#   destination  — folder to move into (default ~/Documents/<name>)
+#   keywords     — words that strongly suggest this category
+#   extensions   — only consider these file types
+#   min_pages / max_pages — PDFs only
+
+[[categories]]
+name = "Books"
+description = "full-length books: textbooks, history, biographies, novels and non-fiction"
+keywords = ["ISBN", "all rights reserved", "edition", "library of congress"]
+min_pages = 100
+
+[[categories]]
+name = "Tool catalogues"
+description = "product catalogues for cutting tools, drills, end mills, taps and measuring instruments, with part numbers, sizes and prices"
+destination = "~/Documents/Sorted/catalogues"
+keywords = ["catalog", "part no", "EDP", "item no", "order no"]
+
+[[categories]]
+name = "School work"
+description = "university course notes, lecture slides, assignments, lab reports, tests and homework"
+keywords = ["assignment", "lecture", "midterm", "professor", "due date"]
+
+[[categories]]
+name = "Resumes"
+description = "resumes, CVs and cover letters for job applications"
+destination = "~/Documents/Sorted/UpdatedResumes"
+
+[[categories]]
+name = "Invoices and receipts"
+description = "invoices, receipts, bills, bank statements and order confirmations"
+keywords = ["invoice", "receipt", "subtotal", "amount due"]

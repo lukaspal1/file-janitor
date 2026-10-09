@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments / secrets
+.venv/
+venv/
+env/
+.env
+
+# Editors / tools
+.claude/
+.vscode/
+.idea/
+
+# OS clutter
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs
+*.log

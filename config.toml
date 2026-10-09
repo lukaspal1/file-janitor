@@ -1,0 +1,44 @@
+# File Janitor — user configuration
+
+[scan]
+# Folders the main "Scan" button walks. Leave empty to scan your home folder.
+roots = []
+
+# Extra paths to always exclude, in addition to the built-in system dirs,
+# AppData / Library, and hidden folders.
+exclude_paths = []
+
+# Skip cloud-synced folders entirely (OneDrive, Dropbox, Google Drive, etc.)
+skip_cloud_sync = true
+
+# Follow symlinks/junctions while scanning. Almost always false.
+follow_symlinks = false
+
+# Minimum file size to consider, in bytes. 0 = no minimum.
+min_size = 0
+
+# Maximum depth to recurse. 0 = unlimited.
+max_depth = 0
+
+[move]
+# Never move across drives without asking — the UI will flag these.
+confirm_cross_drive = true
+
+# Trash destination uses send2trash (OS trash). Do not change.
+delete_uses_trash = true
+
+# When two files with the same name land in the same destination, rename
+# with a (1), (2) suffix. Alternative: "skip" to leave the second alone.
+name_conflict = "rename"    # "rename" | "skip"
+
+# Keep the subfolders you made when moving files out of them, so related
+# files stay grouped:
+#   Desktop/cabinets/kitchen/a.jpg  ->  Pictures/Sorted/cabinets/kitchen/a.jpg
+# false = drop everything straight into the rule's destination folder.
+# Individual rules can override this with `preserve_folders = true/false`.
+preserve_folders = true
+
+[ui]
+# Which columns to show in the proposals table.
+columns = ["selected", "name", "size", "current_path", "destination"]
+theme = "system"
