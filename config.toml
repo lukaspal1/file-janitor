@@ -20,6 +20,12 @@ min_size = 0
 # Maximum depth to recurse. 0 = unlimited.
 max_depth = 0
 
+# After every scan, files that look like they belong where they are (part of
+# a project, a program's data, referenced by a nearby file, …) are unticked
+# and listed under "Suggested to keep". This also lets the local AI model
+# compare each document's text to its folder. false = rules-only check.
+keep_check_ai = true
+
 [move]
 # Never move across drives without asking — the UI will flag these.
 confirm_cross_drive = true

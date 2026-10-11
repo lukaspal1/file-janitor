@@ -83,6 +83,8 @@ class MoveProposal:
     cross_drive: bool = False
     selected: bool = True               # checkbox state in UI
     conflict: Optional[str] = None      # e.g. "name collision"
+    keep_score: float = 0.0             # 0..1, how likely it belongs where it is
+    keep_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass

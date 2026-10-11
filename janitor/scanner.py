@@ -17,6 +17,8 @@ from __future__ import annotations
 import os
 import stat
 import fnmatch
+import time
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -33,6 +35,10 @@ from .config import (
     PROJECT_MARKER_MAX_DEPTH,
     GAME_MARKER_FILES,
     GAME_MARKER_DIRS,
+    GAME_DATA_DIR_NAMES,
+    GAME_HINT_DIRS,
+    GAMES_DIR_NAME,
+    GAME_FOLDER_STALE_DAYS,
     home_skip_paths,
 )
 from .models import Action, FileInfo, MatchReason, MoveProposal, Rule
@@ -533,6 +539,113 @@ def scan_desktop_folders(desktop: Path, ruleset: RuleSet) -> list[MoveProposal]:
             )
         )
 
+    return proposals
+
+
+# ---------- game folders in Documents ----------
+
+_GAME_EXACT = {n.lower() for n in GAME_DATA_DIR_NAMES if not n.endswith("*")}
+_GAME_PREFIX = tuple(n[:-1].lower() for n in GAME_DATA_DIR_NAMES if n.endswith("*"))
+GAME_FOLDER_RULE = f"Game folders -> {GAMES_DIR_NAME}"
+
+
+def _is_game_data_folder(path: Path, depth: int = 2) -> bool:
+    """Known game name, or a saves/replays/… folder within `depth` levels."""
+    name = path.name.lower()
+    if name in _GAME_EXACT or name.startswith(_GAME_PREFIX):
+        return True
+    return _has_game_hint(path, depth)
+
+
+def _has_game_hint(path: Path, depth: int) -> bool:
+    try:
+        subdirs = [e for e in os.scandir(path) if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return False
+    if any(e.name.lower() in GAME_HINT_DIRS for e in subdirs):
+        return True
+    return depth > 1 and any(_has_game_hint(Path(e.path), depth - 1) for e in subdirs)
+
+
+def _folder_stats(path: Path) -> tuple[int, float]:
+    """(total size, newest modification time of anything inside)."""
+    total = 0
+    newest = path.stat().st_mtime
+    for dirpath, dirnames, filenames in os.walk(path, onerror=lambda e: None):
+        for name in dirnames + filenames:
+            try:
+                st = os.lstat(os.path.join(dirpath, name))
+            except OSError:
+                continue
+            newest = max(newest, st.st_mtime)
+            if name in filenames:
+                total += st.st_size
+    return total, newest
+
+
+def scan_game_folders(documents: Path) -> list[MoveProposal]:
+    """
+    Propose moving game data folders in Documents into Documents/My Games.
+
+    Games write to a fixed path, so moving a folder a game still uses makes
+    it start over with default settings. Folders with nothing changed in
+    GAME_FOLDER_STALE_DAYS are ticked; newer ones are unticked and marked
+    as suggested to keep.
+    """
+    proposals: list[MoveProposal] = []
+    games_dir = documents / GAMES_DIR_NAME
+    try:
+        entries = list(os.scandir(documents))
+    except OSError:
+        return proposals
+
+    cutoff = time.time() - GAME_FOLDER_STALE_DAYS * 86400
+    for entry in entries:
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        p = Path(entry.path)
+        if p.name.lower() == GAMES_DIR_NAME.lower() or _is_hidden_dir(p):
+            continue
+        if is_cloud_placeholder(p) or not _is_game_data_folder(p):
+            continue
+        try:
+            size, newest = _folder_stats(p)
+        except OSError:
+            continue
+
+        last = datetime.fromtimestamp(newest).strftime("%Y-%m-%d")
+        destination = games_dir / p.name
+        stale = newest < cutoff
+        keep_reasons = []
+        if not stale:
+            keep_reasons.append(
+                f"Game data last changed {last}. If you still play it, the game "
+                "will recreate this folder in Documents and start with default settings."
+            )
+        if destination.exists():
+            keep_reasons.append(f"{GAMES_DIR_NAME} already has a '{p.name}' folder.")
+
+        proposals.append(
+            MoveProposal(
+                file=FileInfo(path=p, size=size, mtime=newest, drive=drive_root(p)),
+                rule=Rule(
+                    name=GAME_FOLDER_RULE,
+                    priority=0,
+                    destination=games_dir,
+                    action=Action.MOVE,
+                    description=(
+                        f"Game data folder, last changed {last}"
+                        + (" - not used in over a year." if stale else ".")
+                    ),
+                ),
+                destination=destination,
+                action=Action.MOVE,
+                reason=MatchReason.MANUAL,
+                selected=not keep_reasons,
+                keep_score=1.0 if keep_reasons else 0.0,
+                keep_reasons=keep_reasons,
+            )
+        )
     return proposals
 
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
@@ -38,6 +39,7 @@ from PyQt6.QtWidgets import (
 
 from .. import desktop_icons
 from ..config import DEFAULT_RULES_PATH, IS_WINDOWS, AppConfig, load_config
+from ..context import assess
 from ..db import JanitorDB
 from ..duplicates import find_duplicates
 from ..models import (
@@ -59,15 +61,17 @@ from ..scanner import (
     is_cross_drive,
     scan,
     scan_desktop_folders,
+    scan_game_folders,
 )
 from .category_dialog import LARGE_SCAN_FILES, CategoryDialog, CategoryWorker
-from .widgets import GroupList, PreviewPane, ProposalTable, human_size
+from .widgets import KEEP_GROUP, GroupList, PreviewPane, ProposalTable, human_size, suggests_keep
 
 
 # ---------- background scan worker ----------
 
 class ScanWorker(QThread):
-    finished_ok = pyqtSignal(object)   # ScanResult
+    progress = pyqtSignal(str, int, int)     # stage, done, total
+    finished_ok = pyqtSignal(object, int)    # ScanResult, files suggested to keep
     failed = pyqtSignal(str)
 
     def __init__(self, roots, ruleset, desktop_mode: bool, ignored: set[str], config: AppConfig):
@@ -102,8 +106,26 @@ class ScanWorker(QThread):
                 select_cross_drive=not cfg.confirm_cross_drive,
             )
             proposals.extend(result.proposals)
+
+            # Scanning Documents (directly or via home): offer to gather game
+            # folders into My Games, and drop file proposals inside them.
+            documents = (Path.home() / "Documents").resolve()
+            if not self.desktop_mode and any(
+                documents.is_relative_to(r.expanduser().resolve()) for r in self.roots
+            ):
+                game_folders = scan_game_folders(documents)
+                inside = [g.file.path.resolve() for g in game_folders]
+                proposals = [
+                    p for p in proposals
+                    if not any(p.file.path.is_relative_to(g) for g in inside)
+                ] + game_folders
+
             result.proposals = proposals
-            self.finished_ok.emit(result)
+            kept = assess(
+                proposals, use_model=cfg.keep_check_ai,
+                progress_cb=lambda stage, done, total: self.progress.emit(stage, done, total),
+            )
+            self.finished_ok.emit(result, kept)
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
 
@@ -205,15 +227,31 @@ class MainWindow(QMainWindow):
 
         batch_bar = QHBoxLayout()
         self.btn_select_all = QPushButton("Select all")
+        self.btn_select_movable = QPushButton("Select all but suggested to keep")
+        self.btn_select_movable.setToolTip(
+            "Tick everything except files that look like they belong where they are."
+        )
         self.btn_select_none = QPushButton("Select none")
         self.btn_invert = QPushButton("Invert")
         self.btn_select_all.clicked.connect(lambda: self._set_all(True))
+        self.btn_select_movable.clicked.connect(lambda: self._set_all(True, skip_keep=True))
         self.btn_select_none.clicked.connect(lambda: self._set_all(False))
         self.btn_invert.clicked.connect(self._invert_selection)
         batch_bar.addWidget(self.btn_select_all)
+        batch_bar.addWidget(self.btn_select_movable)
         batch_bar.addWidget(self.btn_select_none)
         batch_bar.addWidget(self.btn_invert)
         batch_bar.addStretch(1)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search name, location or destination…  (Ctrl+F)")
+        self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(320)
+        self.search.textChanged.connect(self._apply_search)
+        QShortcut(QKeySequence.StandardKey.Find, self, self.search.setFocus)
+        self.search_count = QLabel()
+        batch_bar.addWidget(self.search_count)
+        batch_bar.addWidget(self.search)
         mid_layout.addLayout(batch_bar)
 
         self.table = ProposalTable()
@@ -318,17 +356,15 @@ class MainWindow(QMainWindow):
         self.scan_roots = roots
         ignored = self.db.ignored_files()
 
-        self.progress = QProgressDialog("Scanning…", None, 0, 0, self)
-        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self.progress.setCancelButton(None)
-        self.progress.show()
+        self._open_progress("Scanning…")
 
         self.worker = ScanWorker(roots, self.ruleset, desktop_mode, ignored, self.config)
+        self.worker.progress.connect(self._worker_progress)
         self.worker.finished_ok.connect(self._scan_done)
         self.worker.failed.connect(self._scan_failed)
         self.worker.start()
 
-    def _scan_done(self, result) -> None:
+    def _scan_done(self, result, kept: int) -> None:
         if self.progress:
             self.progress.close()
         self.proposals = result.proposals
@@ -343,6 +379,8 @@ class MainWindow(QMainWindow):
             f"{result.skipped_sorted} already sorted, "
             f"{result.skipped_system} system dirs."
         )
+        if kept:
+            msg += f" {kept} look like they belong where they are (unticked)."
         self.status.showMessage(msg, 15000)
 
     def _scan_failed(self, err: str) -> None:
@@ -358,12 +396,29 @@ class MainWindow(QMainWindow):
         for i, p in enumerate(self._filtered_proposals()):
             self.table.add_proposal(p, i)
         self.table.blockSignals(False)
+        self._apply_search()
         self._refresh_counts()
 
     def _filtered_proposals(self) -> list[MoveProposal]:
         if not self.current_group:
             return self.proposals
+        if self.current_group == KEEP_GROUP:
+            return [p for p in self.proposals if suggests_keep(p)]
         return [p for p in self.proposals if p.rule.name == self.current_group]
+
+    def _apply_search(self) -> None:
+        """Hide rows that don't match the search box (all words, any column)."""
+        words = self.search.text().lower().split()
+        shown = 0
+        for row in range(self.table.rowCount()):
+            p = self.table.proposal_at(row)
+            haystack = f"{p.file.path} {p.destination or ''} {p.rule.name}".lower()
+            match = all(w in haystack for w in words)
+            self.table.setRowHidden(row, not match)
+            shown += match
+        self.search_count.setText(
+            f"{shown} of {self.table.rowCount()} match" if words else ""
+        )
 
     def _on_group_selected(self, name: str) -> None:
         self.current_group = name
@@ -404,19 +459,21 @@ class MainWindow(QMainWindow):
 
     # ---------- batch actions ----------
 
-    def _set_all(self, checked: bool) -> None:
+    def _set_all(self, checked: bool, *, skip_keep: bool = False) -> None:
+        """Tick/untick every visible row. skip_keep: untick "suggested to keep" rows instead."""
         self.table.blockSignals(True)
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
-            if not item:
+            if not item or self.table.isRowHidden(row):
                 continue
             proposal = item.data(Qt.ItemDataRole.UserRole)
             if proposal.action == Action.SKIP:
                 continue
+            tick = checked and not (skip_keep and suggests_keep(proposal))
             item.setCheckState(
-                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+                Qt.CheckState.Checked if tick else Qt.CheckState.Unchecked
             )
-            proposal.selected = checked
+            proposal.selected = tick
         self.table.blockSignals(False)
         self._refresh_counts()
 
@@ -424,7 +481,7 @@ class MainWindow(QMainWindow):
         self.table.blockSignals(True)
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
-            if not item:
+            if not item or self.table.isRowHidden(row):
                 continue
             proposal = item.data(Qt.ItemDataRole.UserRole)
             if proposal.action == Action.SKIP:
@@ -521,10 +578,7 @@ class MainWindow(QMainWindow):
     def _find_duplicates(self) -> None:
         roots = self.scan_roots or [Path.home()]
 
-        self.progress = QProgressDialog("Hashing files…", None, 0, 0, self)
-        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self.progress.setCancelButton(None)
-        self.progress.show()
+        self._open_progress("Hashing files…")
 
         self.dupe_worker = DuplicateWorker(roots, self.config)
         self.dupe_worker.finished_ok.connect(self._duplicates_done)
@@ -674,22 +728,17 @@ class MainWindow(QMainWindow):
             return
 
         self.scan_roots = [dlg.scan_root]
-        self.progress = QProgressDialog("Finding files…", None, 0, 0, self)
-        self.progress.setWindowTitle("Sort by category")
-        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self.progress.setCancelButton(None)
-        self.progress.setMinimumDuration(0)
-        self.progress.show()
+        self._open_progress("Finding files…", "Sort by category")
 
         self.category_worker = CategoryWorker(
             dlg.scan_root, dlg.categories(), self.config, self.db.ignored_files()
         )
-        self.category_worker.progress.connect(self._category_progress)
+        self.category_worker.progress.connect(self._worker_progress)
         self.category_worker.finished_ok.connect(self._category_done)
         self.category_worker.failed.connect(self._scan_failed)
         self.category_worker.start()
 
-    def _category_progress(self, stage: str, done: int, total: int) -> None:
+    def _worker_progress(self, stage: str, done: int, total: int) -> None:
         if not self.progress:
             return
         if stage == "Loading model":
@@ -703,7 +752,7 @@ class MainWindow(QMainWindow):
             self.progress.setMaximum(0)
             self.progress.setLabelText(f"{stage}…")
 
-    def _category_done(self, proposals: list, examined: int) -> None:
+    def _category_done(self, proposals: list, examined: int, kept: int) -> None:
         if self.progress:
             self.progress.close()
         self.desktop_mode = False
@@ -713,7 +762,8 @@ class MainWindow(QMainWindow):
         self._refresh_stats()
         self.status.showMessage(
             f"Looked at {examined} files; {len(proposals)} matched a category. "
-            "Unmatched or unclear files are left where they are.",
+            "Unmatched or unclear files are left where they are."
+            + (f" {kept} look like they belong where they are (unticked)." if kept else ""),
             15000,
         )
 
@@ -786,11 +836,23 @@ class MainWindow(QMainWindow):
 
     # ---------- helpers ----------
 
+    def _open_progress(self, text: str, title: str = "File Janitor") -> None:
+        self.progress = QProgressDialog(text, None, 0, 0, self)
+        self.progress.setWindowTitle(title)
+        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.progress.setCancelButton(None)
+        self.progress.setMinimumDuration(0)
+        # Workers report several stages; a stage hitting 100% (e.g. "Reading
+        # documents 33/33") must not close the dialog while the next one runs.
+        self.progress.setAutoClose(False)
+        self.progress.setAutoReset(False)
+        self.progress.show()
+
     def _refresh_counts(self) -> None:
         counts: dict[str, int] = {}
         for p in self.proposals:
             counts[p.rule.name] = counts.get(p.rule.name, 0) + 1
-        self.groups.set_groups(counts)
+        self.groups.set_groups(counts, sum(1 for p in self.proposals if suggests_keep(p)))
 
     def _refresh_stats(self) -> None:
         s = self.db.stats()

@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from ..categories import Category, classify_files, load_categories, save_categories
 from ..config import AppConfig
+from ..context import assess
 from ..models import Action, FileInfo, MatchReason, MoveProposal, Rule
 from ..scanner import (
     _is_link,
@@ -219,7 +220,7 @@ def collect_files(root: Path, config: AppConfig, skip_under: list[Path]) -> list
 
 class CategoryWorker(QThread):
     progress = pyqtSignal(str, int, int)     # stage, done, total
-    finished_ok = pyqtSignal(object, int)    # list[MoveProposal], files examined
+    finished_ok = pyqtSignal(object, int, int)  # list[MoveProposal], files examined, suggested to keep
     failed = pyqtSignal(str)
 
     def __init__(self, root: Path, categories: list[Category], config: AppConfig,
@@ -239,7 +240,7 @@ class CategoryWorker(QThread):
                 if str(f.path) not in self.ignored
             ]
             if not files:
-                self.finished_ok.emit([], 0)
+                self.finished_ok.emit([], 0, 0)
                 return
 
             matches = classify_files(
@@ -276,6 +277,10 @@ class CategoryWorker(QThread):
                     cross_drive=cross,
                     selected=self.config.confirm_cross_drive is False or not cross,
                 ))
-            self.finished_ok.emit(proposals, len(files))
+            kept = assess(
+                proposals, use_model=self.config.keep_check_ai,
+                progress_cb=lambda stage, done, total: self.progress.emit(stage, done, total),
+            )
+            self.finished_ok.emit(proposals, len(files), kept)
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")

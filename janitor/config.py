@@ -137,9 +137,50 @@ PROJECT_MARKERS = {
     "*.sln", "*.csproj", "*.fsproj", "*.vbproj",
     "Gemfile", "composer.json", "mix.exs", "Project.toml",
     "Makefile", "CMakeLists.txt", "Dockerfile", "docker-compose.yml",
+    # IDE / workspace files
+    ".project", ".classpath", ".idea", "*.iml", "*.code-workspace",
+    "*.uproject", "*.Rproj", "*.xcodeproj", "*.sublime-project",
+    "Doxyfile", "*.doxyfile",
 }
 # How many parent directories to check for a project marker
 PROJECT_MARKER_MAX_DEPTH = 4
+
+# ---- App / game data folders ----
+# Folders that programs create in Documents (or home) for settings, saves,
+# presets and plugins. Matched case-insensitively against the folder name;
+# an entry ending in "*" matches as a prefix.
+GAME_DATA_DIR_NAMES = {
+    "Rockstar Games", "EA Games", "Electronic Arts", "Ubisoft", "Klei",
+    "Paradox Interactive", "Respawn", "Riot Games", "League of Legends",
+    "Battlefield*", "Call of Duty*", "The Witcher*", "Guild Wars*",
+    "Elder Scrolls*", "Euro Truck Simulator*", "American Truck Simulator",
+    "Dolphin Emulator", "Assassin's Creed*", "Far Cry*", "Grand Theft Auto*",
+    "BioWare", "Larian Studios", "CD Projekt Red", "FromSoftware", "NBA 2K*",
+    "FIFA*", "EA SPORTS*", "Apex Legends", "Overwatch", "Rocket League",
+    "Halo*", "Destiny*", "Diablo*", "StarCraft*", "Warcraft*", "Hearthstone",
+    "Cyberpunk*", "Red Dead*", "Watch Dogs*", "Rainbow Six*", "Anno *",
+    "Football Manager*", "Need for Speed*", "Mass Effect*", "Dragon Age*",
+    "Dark Souls*", "Elden Ring", "Sekiro", "Terraria", "Stardew Valley",
+    "Hogwarts Legacy", "Starfield", "XDefiant",
+}
+APP_DATA_DIR_NAMES = GAME_DATA_DIR_NAMES | {
+    "My Games", "Saved Games", "Image-Line", "Blizzard", "Battle.net", "Steam",
+    "Native Instruments", "Ableton", "Arduino",
+    "WindowsPowerShell", "PowerShell", "Custom Office Templates",
+    "OneNote Notebooks", "Visual Studio*", "SQL Server Management Studio*",
+}
+# A Documents folder with one of these inside is treated as a game's data.
+GAME_HINT_DIRS = {"saves", "savegames", "savegame", "savedata", "players", "replays"}
+# Game folders in Documents can be gathered into Documents/My Games. Only
+# ones untouched this long are ticked: a game still in use would recreate
+# its folder in Documents and lose its settings.
+GAMES_DIR_NAME = "My Games"
+GAME_FOLDER_STALE_DAYS = 365
+# A folder holding one of these subfolders is treated as app/game data.
+APP_DATA_HINT_DIRS = {
+    "settings", "saves", "savegames", "save", "savedata", "profiles",
+    "players", "config", "configs", "cfg", "mods", "plugins", "presets",
+}
 
 # ---- Game folder heuristic ----
 # A folder is "probably a game" if it contains any of these AND
@@ -170,6 +211,7 @@ class AppConfig:
     confirm_cross_drive: bool = True
     name_conflict: str = "rename"
     preserve_folders: bool = True
+    keep_check_ai: bool = True
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AppConfig:
@@ -195,4 +237,5 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AppConfig:
         confirm_cross_drive=bool(move.get("confirm_cross_drive", True)),
         name_conflict=name_conflict,
         preserve_folders=bool(move.get("preserve_folders", True)),
+        keep_check_ai=bool(scan.get("keep_check_ai", True)),
     )
